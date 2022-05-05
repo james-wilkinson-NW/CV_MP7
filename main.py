@@ -1,7 +1,10 @@
 from PIL import Image
+import cv2
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
+
 
 def read_img(filename):
     img = Image.open(filename)
@@ -18,8 +21,8 @@ def draw_box(img, corner, side, filename=None):
     :param filename: if not None, save image to filename
     '''
 
-    top_bottom_coords = [[y, x] for x in range(corner[1], corner[1]+side) for y in [corner[0], corner[0] + side]]
-    side_coords = [[y, x] for y in range(corner[0], corner[0] + side) for x in [corner[1], corner[1] + side]]
+    top_bottom_coords = [[y, x] for x in range(corner[1], min(img.shape[1], corner[1]+side)) for y in [corner[0], min(img.shape[0], corner[0] + side)]]
+    side_coords = [[y, x] for y in range(corner[0], min(img.shape[0], corner[0] + side)) for x in [corner[1], min(img.shape[1], corner[1] + side)]]
     for coords in top_bottom_coords + side_coords:
         try:
             img[coords[0], coords[1]] = 0
@@ -46,6 +49,31 @@ def SSD(a1, a2):
     return np.sum(np.power((a1-a2), 2))
 
 
+def CC(a1, a2):
+    '''
+
+    :param a1: np array 1
+    :param a2: np array 2 (matching dims to a1)
+    :return: float. Cross correlation of arrays a1 and a2
+    '''
+    assert (a1.shape == a2.shape)
+    return -np.sum(a1*a2)
+
+
+def NCC(a1, a2):
+    '''
+
+    :param a1: np array 1
+    :param a2: np array 2 (matching dims to a1)
+    :return: float. Normalised Cross correlation of arrays a1 and a2
+    '''
+    assert (a1.shape == a2.shape)
+    a1 = a1 - np.mean(a1)
+    a2 = a2 - np.mean(a2)
+    return -np.sum(a1*a2) / np.sqrt(np.sum(a1**2) * np.sum(a2**2))
+
+
+
 def find_optimal_overlay(img, ref, scorefunc = SSD):
     '''
 
@@ -68,7 +96,35 @@ def find_optimal_overlay(img, ref, scorefunc = SSD):
     return best_coords
 
 
+def jpg_to_mp4(path, outdir, video_name='NCC.mp4'):
+    '''
+
+    converts directory of jpgs into a mp4, sorting images by filename
+    :param path: path to jpg images
+    :param outdir: directory to save video in
+    '''
+
+    img_array = []
+    files = os.listdir(path)
+    files.sort()
+    for filename in tqdm(files):
+        img = cv2.imread(os.path.join(path, filename))
+        height, width, layers = img.shape
+        size = (width, height)
+        img_array.append(img)
+
+    out = cv2.VideoWriter(os.path.join(outdir, video_name), cv2.VideoWriter_fourcc(*'MP4V'), 15, size)
+
+    for i in tqdm(range(len(img_array))):
+        out.write(img_array[i])
+    out.release()
+    return
+
+
 if __name__ == '__main__':
+
+    metric = CC # choose SSD, CC or NCC
+
     files = os.listdir('./image_girl/')
     files.sort()
     init_img = read_img(os.path.join('./image_girl/', files[0]))
@@ -77,16 +133,10 @@ if __name__ == '__main__':
     corner = [20, 50]
     side = 45
 
-    # 2) plot the initial box if wanted
-    #f = plt.figure()
-    #draw_box(init_img, corner, side)
-    #plt.suptitle('orig')
-
     # 3) find optimal overlay of box in the next image
     img = init_img
     corner0 = corner.copy()
     for _file in files[:]:
-        #print('newfile: ',_file)
         new_img = read_img(os.path.join('./image_girl/', _file))
         ref_box = init_img[corner0[0]:corner0[0]+side, corner0[1]:corner0[1]+side]
 
@@ -97,26 +147,16 @@ if __name__ == '__main__':
 
         # make sure the view window is the right shape
         if view_window.shape[0] < side + 2*winsize:
-            print("Type 1 ",_file)
             zeros = np.zeros(shape=(side+2*winsize - view_window.shape[0], view_window.shape[1], 3))
             view_window = np.concatenate([view_window, zeros], axis=0)
         if view_window.shape[1] < side + 2 * winsize:
-            print("Type 2 ",_file)
             zeros = np.zeros(shape=(view_window.shape[0], side+2*winsize - view_window.shape[1], 3))
             view_window = np.concatenate([view_window, zeros], axis=1)
 
-
-        sub_corner = find_optimal_overlay(view_window, ref_box)
+        sub_corner = find_optimal_overlay(view_window, ref_box, scorefunc=metric)
         draw_box(view_window, sub_corner, side)
-        print(corner)
         corner = (sub_corner[0]+win_y_min, sub_corner[1]+win_x_min)
-        print(sub_corner)
-        print(corner, sub_corner, win_x_min, win_y_min, img.shape)
-        #f = plt.figure()
-        #plt.imshow(view_window)
-        #plt.suptitle('sub window')
-        #f = plt.figure()
-        draw_box(new_img, corner, side, filename='./Results/{}'.format(_file))
-        #plt.suptitle('full window')
-        #img = new_img
-        #plt.show()
+        draw_box(new_img, corner, side, filename='./Results/images/{}'.format(_file)) # this will save images as jpgs in ./Results/images/
+
+    # finally convert to video
+    jpg_to_mp4('./Results/images/', './Results/')
